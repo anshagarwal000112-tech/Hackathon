@@ -95,10 +95,18 @@ async def predict(region: str):
             rainfall = sum(daily.get("precipitation_sum", [0,0,0])[:3])
             max_temp = max(daily.get("temperature_2m_max", [temp])[:3])
             
-            flood_risk = min(rainfall / 150, 1.0)
-            heat_risk = max(0, min((max_temp - 35) / 10, 1.0))
+            # Better thresholds
+            flood_risk = min(rainfall / 200, 1.0) if rainfall > 5 else 0  # Only significant rainfall counts
+            heat_risk = max(0, min((max_temp - 38) / 8, 1.0))  # Adjusted for heatwave threshold
             
-            primary = "FLOOD" if flood_risk > heat_risk else "HEATWAVE"
+            # Primary disaster determination
+            if flood_risk > heat_risk and flood_risk > 0.1:
+                primary = "FLOOD"
+            elif heat_risk > 0.3:
+                primary = "HEATWAVE"
+            else:
+                primary = "NORMAL"
+            
             max_risk = max(flood_risk, heat_risk)
             
             if max_risk > 0.8:
