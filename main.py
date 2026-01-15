@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
 from datetime import datetime
@@ -9,7 +10,15 @@ HF_TOKEN = os.getenv("HF_API_TOKEN", "hf_YOUR_TOKEN")
 
 app = FastAPI(title="🌍 India Disaster Prediction API")
 
-# All 36 states + UTs
+# Enable CORS for web requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 REGIONS = {
     "Andhra Pradesh": {"lat": 15.9129, "lon": 79.7400},
     "Arunachal Pradesh": {"lat": 28.2180, "lon": 94.7278},
@@ -51,115 +60,157 @@ REGIONS = {
 }
 
 async def get_weather(lat: float, lon: float):
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": lat,
-                "longitude": lon,
-                "current": "temperature_2m,relative_humidity_2m,precipitation",
-                "daily": ["precipitation_sum", "temperature_2m_max"],
-                "timezone": "IST",
-                "forecast_days": 7
-            }
-        )
-        return response.json()
-
-async def generate_alert_hf(disaster, risk_level, region, rainfall):
-    prompt = f"""Generate SHORT disaster alert (2 sentences max):
-Disaster: {disaster}
-Risk: {risk_level}
-Region: {region}
-Rainfall: {rainfall}mm
-Alert:"""
-    
+    """Fetch real-time weather data"""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(
-                "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1",
-                headers={"Authorization": f"Bearer {HF_TOKEN}"},
-                json={"inputs": prompt}
+            response = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "current": "temperature_2m,relative_humidity_2m,precipitation",
+                    "daily": ["precipitation_sum", "temperature_2m_max"],
+                    "timezone": "IST",
+                    "forecast_days": 7
+                }
             )
             if response.status_code == 200:
-                result = response.json()
-                if isinstance(result, list) and result:
-                    return result.get('generated_text', '')[:150]
-    except:
-        pass
-    return f"⚠️ {risk_level} {disaster} risk in {region}"
+                return response.json()
+            return None
+    except Exception as e:
+        print(f"Weather API error: {e}")
+        return None
+
+async def generate_alert_simple(disaster, risk_level, region, rainfall):
+    """Generate simple fallback alert without HF API"""
+    alerts = {
+        "FLOOD": {
+            "EXTREME": f"🚨 EXTREME flood risk in {region}! Heavy rainfall expected. Evacuate immediately.",
+            "HIGH": f"⚠️ HIGH flood risk in {region}. Prepare to evacuate.",
+            "MEDIUM": f"⚡ MEDIUM flood risk in {region}. Stay alert.",
+            "LOW": f"📢 LOW flood risk in {region}."
+        },
+        "HEATWAVE": {
+            "EXTREME": f"🌡️ EXTREME heat alert for {region}! Temperature critical. Stay indoors.",
+            "HIGH": f"🔥 HIGH heat alert for {region}. Drink water and avoid sun.",
+            "MEDIUM": f"☀️ MEDIUM heat alert for {region}.",
+            "LOW": f"📊 LOW heat risk in {region}."
+        }
+    }
+    return alerts.get(disaster, {}).get(risk_level, f"Alert for {region}")
 
 @app.get("/")
 async def root():
-    return {"system": "🌍 India Disaster Prediction", "regions": len(REGIONS)}
-
-@app.get("/predict/{region}")
-async def predict(region: str):
-    if region not in REGIONS:
-        raise HTTPException(status_code=404, detail="Region not found")
-    
-    coords = REGIONS[region]
-    
-    try:
-        weather = await get_weather(coords["lat"], coords["lon"])
-    except:
-        raise HTTPException(status_code=500, detail="Weather API unavailable")
-    
-    current = weather.get("current", {})
-    daily = weather.get("daily", {})
-    
-    temp = current.get("temperature_2m", 25)
-    rainfall_72h = sum(daily.get("precipitation_sum", [0,0,0])[:3])
-    max_temp = max(daily.get("temperature_2m_max", [temp])[:7])
-    
-    flood_risk = min(rainfall_72h / 150, 1.0)
-    heat_risk = min((max_temp - 35) / 8, 1.0)
-    
-    primary = "FLOOD" if flood_risk > heat_risk else "HEATWAVE"
-    max_risk = max(flood_risk, heat_risk)
-    
-    if max_risk > 0.80:
-        risk_level = "EXTREME"
-    elif max_risk > 0.50:
-        risk_level = "HIGH"
-    elif max_risk > 0.20:
-        risk_level = "MEDIUM"
-    else:
-        risk_level = "LOW"
-    
-    alert = await generate_alert_hf(primary, risk_level, region, rainfall_72h)
-    
+    """Root endpoint"""
     return {
-        "region": region,
-        "timestamp": datetime.now().isoformat(),
-        "prediction": {
-            "primary_disaster": primary,
-            "risk_level": risk_level,
-            "flood_risk": round(flood_risk, 2),
-            "heat_risk": round(heat_risk, 2),
-            "rainfall_72h_mm": round(rainfall_72h, 1),
-            "max_temperature": round(max_temp, 1),
-            "alert": alert
-        }
+        "system": "🌍 India Disaster Prediction",
+        "regions": len(REGIONS),
+        "status": "✅ OPERATIONAL"
     }
-
-@app.get("/all")
-async def get_all():
-    results = {}
-    for region in REGIONS.keys():
-        try:
-            result = await predict(region)
-            results[region] = result["prediction"]
-        except:
-            results[region] = {"error": "Failed"}
-    
-    return {"total": len(results), "predictions": results}
 
 @app.get("/health")
 async def health():
-    return {"status": "✅ OPERATIONAL", "regions": len(REGIONS)}
+    """Health check"""
+    return {
+        "status": "✅ OPERATIONAL",
+        "regions": len(REGIONS),
+        "api": "Working"
+    }
+
+@app.get("/predict/{region}")
+async def predict(region: str):
+    """Predict disaster for a specific region"""
+    
+    # Exact match check
+    if region not in REGIONS:
+        # Try case-insensitive match
+        for key in REGIONS.keys():
+            if key.lower() == region.lower():
+                region = key
+                break
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Region '{region}' not found. Use exact spelling."
+            )
+    
+    coords = REGIONS[region]
+    
+    # Get weather data
+    try:
+        weather = await get_weather(coords["lat"], coords["lon"])
+        if not weather:
+            raise HTTPException(status_code=503, detail="Weather API unavailable")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Weather error: {str(e)}")
+    
+    try:
+        current = weather.get("current", {})
+        daily = weather.get("daily", {})
+        
+        temp = current.get("temperature_2m", 25)
+        rainfall_72h = sum(daily.get("precipitation_sum", [0,0,0])[:3])
+        max_temp = max(daily.get("temperature_2m_max", [temp])[:7])
+        
+        # Calculate risks
+        flood_risk = min(rainfall_72h / 150, 1.0) if rainfall_72h > 0 else 0
+        heat_risk = min(max(max_temp - 35, 0) / 8, 1.0) if max_temp > 35 else 0
+        
+        # Determine primary disaster
+        primary = "FLOOD" if flood_risk > heat_risk else "HEATWAVE"
+        max_risk = max(flood_risk, heat_risk)
+        
+        # Determine risk level
+        if max_risk > 0.80:
+            risk_level = "EXTREME"
+        elif max_risk > 0.50:
+            risk_level = "HIGH"
+        elif max_risk > 0.20:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+        
+        # Generate alert (use simple fallback)
+        alert = await generate_alert_simple(primary, risk_level, region, rainfall_72h)
+        
+        return {
+            "region": region,
+            "timestamp": datetime.now().isoformat(),
+            "prediction": {
+                "primary_disaster": primary,
+                "risk_level": risk_level,
+                "flood_risk": round(flood_risk, 2),
+                "heat_risk": round(heat_risk, 2),
+                "rainfall_72h_mm": round(rainfall_72h, 1),
+                "max_temperature": round(max_temp, 1),
+                "alert": alert
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.get("/all")
+async def get_all():
+    """Predict for all regions"""
+    results = {}
+    
+    # Get first 10 regions for testing
+    for region in list(REGIONS.keys())[:10]:
+        try:
+            result = await predict(region)
+            results[region] = result["prediction"]
+        except Exception as e:
+            results[region] = {"error": "Failed to predict"}
+    
+    return {
+        "total": len(results),
+        "predictions": results
+    }
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n🚀 Starting API on http://localhost:8000")
+    print("\n🚀 Starting API on http://0.0.0.0:8000")
     print("📍 Docs: http://localhost:8000/docs")
     uvicorn.run(app, host="0.0.0.0", port=8000)
