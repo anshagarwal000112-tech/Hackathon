@@ -53,7 +53,7 @@ REGIONS = {
     "Dadra & Nagar Haveli": {"lat": 20.2840, "lon": 73.4054},
     "Daman & Diu": {"lat": 20.7276, "lon": 72.8479},
     "Delhi": {"lat": 28.7041, "lon": 77.1025},
-    "Jammu & Kashmir": {"lat": 33.7782, "lon": 76.5769},
+    "Jammu & Kashmir": {"lat": 33.2778, "lon": 75.3412},
     "Ladakh": {"lat": 34.2268, "lon": 77.5619},
     "Lakshadweep": {"lat": 12.2381, "lon": 73.2383},
     "Puducherry": {"lat": 12.0657, "lon": 79.8711},
